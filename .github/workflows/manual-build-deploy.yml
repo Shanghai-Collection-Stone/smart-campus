@@ -31,11 +31,14 @@ jobs:
           node-version: 20.x
           cache: pnpm
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-          run_install: true
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Activate pnpm
+        run: corepack prepare pnpm@9.12.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Build Next.js
         run: pnpm run build
