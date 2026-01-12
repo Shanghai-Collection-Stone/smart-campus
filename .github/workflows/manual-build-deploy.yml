@@ -94,25 +94,30 @@ jobs:
 
       - name: Restart Docker app
         run: |
+          SERVICE="smart-campus"
+          DP="${{ inputs.deploy_path }}"
           if command -v docker >/dev/null 2>&1; then
-            if [ -f "${{ inputs.deploy_path }}/docker-compose.yml" ]; then
-              cd "${{ inputs.deploy_path }}"
+            if [ -f "$DP/docker-compose.yml" ]; then
               if docker compose version >/dev/null 2>&1; then
-                docker compose up -d --no-build
-                docker compose ps -q smart-campus >/dev/null 2>&1 && docker exec smart-campus bash -lc "npm i -g pnpm@9 && pnpm -v" || true
-                docker compose restart smart-campus || true
+                docker compose -f "$DP/docker-compose.yml" --project-directory "$DP" up -d --no-build
+                docker compose -f "$DP/docker-compose.yml" --project-directory "$DP" restart "$SERVICE" || true
               elif command -v docker-compose >/dev/null 2>&1; then
-                docker-compose up -d
-                docker ps -a --format '{{.Names}}' | grep -Eq '^smart-campus$' && docker exec smart-campus bash -lc "npm i -g pnpm@9 && pnpm -v" || true
-                docker-compose restart smart-campus || true
+                docker-compose -f "$DP/docker-compose.yml" up -d
+                docker-compose -f "$DP/docker-compose.yml" restart "$SERVICE" || true
               else
                 echo "docker compose not available";
               fi
-            elif docker ps -a --format '{{.Names}}' | grep -Eq '^smart-campus$'; then
-              docker exec smart-campus bash -lc "npm i -g pnpm@9 && pnpm -v" || true
-              docker restart smart-campus || true
             else
-              echo "no compose file and container 'smart-campus' not found"
+              if docker ps -a --format '{{.Names}}' | grep -Eq "^${SERVICE}$"; then
+                docker restart "$SERVICE" || true
+              else
+                docker rm -f "$SERVICE" >/dev/null 2>&1 || true
+                if [ -f "$DP/server/assistant-ws.mjs" ]; then
+                  docker run -d --name "$SERVICE" -p 3002:3002 -e PORT=3002 -e NODE_ENV=production -v "$DP":/app node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; node server/assistant-ws.mjs"
+                else
+                  docker run -d --name "$SERVICE" -p 3002:3002 -e PORT=3002 -e NODE_ENV=production -v "$DP":/app node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; next start -H 0.0.0.0 -p \${PORT:-3002}"
+                fi
+              fi
             fi
           else
             echo "docker not found"
