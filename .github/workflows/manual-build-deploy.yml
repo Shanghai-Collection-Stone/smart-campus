@@ -56,7 +56,15 @@ jobs:
           NODE_ENV: production
 
       - name: Zip .next
-        run: zip -r next-build.zip .next
+        run: zip -r next-build.zip \
+          .next \
+          server/assistant-ws.mjs \
+          package.json \
+          pnpm-lock.yaml \
+          docker-compose.yml \
+          Dockerfile \
+          next.config.mjs \
+          next.config.ts
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
