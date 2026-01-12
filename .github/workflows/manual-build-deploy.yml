@@ -1,0 +1,79 @@
+name: Manual Build and Deploy
+
+permissions:
+  contents: read
+  actions: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: 是否执行部署到服务器 runner
+        type: boolean
+        required: true
+        default: false
+      deploy_path:
+        description: 部署解压目标目录（服务器 runner 上）
+        type: string
+        required: false
+        default: "/var/www/demo-sass"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: pnpm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: true
+
+      - name: Build Next.js
+        run: pnpm run build
+        env:
+          NODE_ENV: production
+
+      - name: Zip .next
+        run: zip -r next-build.zip .next
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-build
+          path: next-build.zip
+          compression-level: 9
+          retention-days: 1
+
+  deploy:
+    if: ${{ inputs.deploy }}
+    needs: build
+    runs-on: [self-hosted, linux, dev]
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: next-build
+          path: ./artifact
+
+      - name: Ensure target directory
+        run: mkdir -p "${{ inputs.deploy_path }}"
+
+      - name: Unzip to target
+        run: unzip -o ./artifact/next-build.zip -d "${{ inputs.deploy_path }}"
+
+      - name: Cleanup local artifact
+        run: rm -f ./artifact/next-build.zip && rm -rf ./artifact
+
+      - name: Delete artifact in GitHub
+        uses: geekyeggo/delete-artifact@v4
+        with:
+          name: next-build
