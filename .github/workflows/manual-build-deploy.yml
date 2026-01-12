@@ -16,7 +16,7 @@ on:
         description: 部署解压目标目录（服务器 runner 上）
         type: string
         required: false
-        default: "/var/www/demo-sass"
+        default: "/www/ace.root/smart-campus"
 
 jobs:
   build:
@@ -66,6 +66,9 @@ jobs:
 
       - name: Ensure target directory
         run: mkdir -p "${{ inputs.deploy_path }}"
+
+      - name: Remove existing .next
+        run: rm -rf "${{ inputs.deploy_path }}/.next"
 
       - name: Install unzip if missing
         run: |
