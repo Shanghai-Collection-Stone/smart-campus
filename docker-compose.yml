@@ -19,7 +19,7 @@ services:
       - /bin/bash
       - -lc
       - >
-        npm install && next start -H 0.0.0.0 -p ${PORT:-3002}
+        npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; next start -H 0.0.0.0 -p ${PORT:-3002}
 
 volumes:
   smartcampus_node_modules:
