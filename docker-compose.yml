@@ -15,6 +15,11 @@ services:
     volumes:
       - ./:/app
       - smartcampus_node_modules:/app/node_modules
+    command:
+      - /bin/bash
+      - -lc
+      - >
+        npm install && next start -H 0.0.0.0 -p ${PORT:-3002}
 
 volumes:
   smartcampus_node_modules:

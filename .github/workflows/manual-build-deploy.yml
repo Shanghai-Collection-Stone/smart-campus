@@ -98,14 +98,19 @@ jobs:
             if [ -f "${{ inputs.deploy_path }}/docker-compose.yml" ]; then
               cd "${{ inputs.deploy_path }}"
               if docker compose version >/dev/null 2>&1; then
-                docker compose up -d
+                docker compose up -d --no-build
+                docker compose ps -q smart-campus >/dev/null 2>&1 && docker exec smart-campus bash -lc "npm i -g pnpm@9 && pnpm -v" || true
+                docker compose restart smart-campus || true
               elif command -v docker-compose >/dev/null 2>&1; then
                 docker-compose up -d
+                docker ps -a --format '{{.Names}}' | grep -Eq '^smart-campus$' && docker exec smart-campus bash -lc "npm i -g pnpm@9 && pnpm -v" || true
+                docker-compose restart smart-campus || true
               else
                 echo "docker compose not available";
               fi
             elif docker ps -a --format '{{.Names}}' | grep -Eq '^smart-campus$'; then
-              docker restart smart-campus
+              docker exec smart-campus bash -lc "npm i -g pnpm@9 && pnpm -v" || true
+              docker restart smart-campus || true
             else
               echo "no compose file and container 'smart-campus' not found"
             fi
