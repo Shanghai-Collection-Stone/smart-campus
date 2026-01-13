@@ -6,6 +6,7 @@
     "dev": "node server/assistant-ws.mjs",
     "build": "next build",
     "start": "node server/assistant-ws.mjs",
+    "dev:start":"next start",
     "lint": "eslint"
   },
   "dependencies": {
