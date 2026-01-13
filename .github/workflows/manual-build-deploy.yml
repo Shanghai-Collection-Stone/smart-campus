@@ -113,8 +113,14 @@ jobs:
         run: |
           SERVICE="smart-campus"
           DP="${{ inputs.deploy_path }}"
+          
+          # 将 runner 容器内的路径转换为宿主机路径
+          # /www/ace.root -> /www/ace.c
+          HOST_PATH="${DP/\/www\/ace.root/\/www\/ace.c}"
+          
           ENV_INPUT="${{ inputs.env_file_path }}"
           ENV_TARGET="$DP/.env.local"
+          
           if [ -n "$ENV_INPUT" ] && [ -f "$ENV_INPUT" ]; then
             ENV_FILE="$ENV_INPUT"
           elif [ -f "$ENV_TARGET" ]; then
@@ -122,11 +128,13 @@ jobs:
           else
             ENV_FILE=""
           fi
+          
           if [ -n "$ENV_FILE" ]; then
             ENV_OPT=(--env-file "$ENV_FILE")
           else
             ENV_OPT=()
           fi
+          
           if command -v docker >/dev/null 2>&1; then
             if [ -f "$DP/docker-compose.yml" ]; then
               if docker compose version >/dev/null 2>&1; then
@@ -139,9 +147,15 @@ jobs:
             else
               docker rm -f "$SERVICE" >/dev/null 2>&1 || true
               if [ -f "$DP/server/assistant-ws.mjs" ]; then
-                docker run "${ENV_OPT[@]}" -d --name "$SERVICE" -p 3002:3002 -e PORT=3002 -e NODE_ENV=production -v "$DP":/app node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; node server/assistant-ws.mjs"
+                docker run "${ENV_OPT[@]}" -d --name "$SERVICE" -p 3002:3002 \
+                  -e PORT=3002 -e NODE_ENV=production \
+                  -v "$HOST_PATH":/app \
+                  node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; node server/assistant-ws.mjs"
               else
-                docker run "${ENV_OPT[@]}" -d --name "$SERVICE" -p 3002:3002 -e PORT=3002 -e NODE_ENV=production -v "$DP":/app node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; next start -H 0.0.0.0 -p \${PORT:-3002}"
+                docker run "${ENV_OPT[@]}" -d --name "$SERVICE" -p 3002:3002 \
+                  -e PORT=3002 -e NODE_ENV=production \
+                  -v "$HOST_PATH":/app \
+                  node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; next start -H 0.0.0.0 -p \${PORT:-3002}"
               fi
             fi
           else
