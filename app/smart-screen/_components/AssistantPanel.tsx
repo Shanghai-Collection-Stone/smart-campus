@@ -61,6 +61,7 @@ export default function AssistantPanel() {
 
   const [aiText, setAiText] = useState("");
   const [wsReady, setWsReady] = useState(false);
+  const [statusText, setStatusText] = useState<string>("");
   const wsRef = useRef<Socket | null>(null);
   const userScrollRef = useRef<HTMLDivElement | null>(null);
   const aiScrollRef = useRef<HTMLDivElement | null>(null);
@@ -344,13 +345,37 @@ export default function AssistantPanel() {
     });
     s.on("connect", () => {
       setWsReady(true);
+      setStatusText("已连接");
       s.emit("start");
       s.emit("panel:join");
       console.log("[assistant] ws connect", { id: s.id, path: String(s.io?.opts?.path ?? "") });
     });
-    s.on("connect_error", (err: Error) => { console.log("[assistant] ws connect_error", { message: err.message }); });
-    s.on("error", (err: Error) => { console.log("[assistant] ws error", { message: err.message }); });
-    s.io.on("reconnect_attempt", (n: number) => { console.log("[assistant] ws reconnect_attempt", { attempt: n }); });
+    s.on("disconnect", () => {
+      setWsReady(false);
+      setStatusText("未连接");
+    });
+    s.on("connect_error", (err: Error) => {
+      setWsReady(false);
+      setStatusText("连接错误");
+      console.log("[assistant] ws connect_error", { message: err.message });
+    });
+    s.on("error", (err: Error) => {
+      setStatusText("错误");
+      console.log("[assistant] ws error", { message: err.message });
+    });
+    s.io.on("reconnect_attempt", (n: number) => {
+      setStatusText("重连中…");
+      console.log("[assistant] ws reconnect_attempt", { attempt: n });
+    });
+    s.on("status", (payload: unknown) => {
+      const obj = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : null;
+      const st = obj && typeof obj.status === "string" ? obj.status : "";
+      let text = "";
+      if (st === "ready") text = "就绪";
+      else if (st === "working") text = "处理中";
+      else if (st) text = st;
+      setStatusText(text);
+    });
     s.on("assistant_message", (payload: { message: string }) => {
       if (payload?.message) {
         const composedBeforeReset = `${pendingAccumulateRef.current} ${finalsRef.current.join(" ")} ${interimRef.current}`.trim();
@@ -581,6 +606,18 @@ export default function AssistantPanel() {
             文字聊天
           </button>
         </div>
+      </div>
+      <div className="flex items-center gap-2 px-1">
+        <span className={`rounded-full px-2 py-1 text-[10px] ring-1 ${wsReady ? "bg-emerald-500/10 text-emerald-400 ring-emerald-500/30" : "bg-white/5 text-zinc-400 ring-white/10"}`}>{wsReady ? "WS已连接" : "WS未连接"}</span>
+        {statusText ? (
+          <span className="rounded-full px-2 py-1 text-[10px] bg-white/5 text-zinc-400 ring-1 ring-white/10">{statusText}</span>
+        ) : null}
+        {sendingSoon ? (
+          <span className="rounded-full px-2 py-1 text-[10px] bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30">即将发送</span>
+        ) : null}
+        {err ? (
+          <span className="rounded-full px-2 py-1 text-[10px] bg-rose-500/10 text-rose-400 ring-1 ring-rose-500/30">{err}</span>
+        ) : null}
       </div>
 
       {mode === "voice" ? (
