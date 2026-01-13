@@ -99,16 +99,30 @@ jobs:
 
       - name: Copy env file if provided
         run: |
-          if [ -n "${{ inputs.env_file_path }}" ] && [ -f "${{ inputs.env_file_path }}" ]; then
-            cp -f "${{ inputs.env_file_path }}" "${{ inputs.deploy_path }}/.env.local";
+          SRC="${{ inputs.env_file_path }}";
+          DST="${{ inputs.deploy_path }}/.env.local";
+          if [ -n "$SRC" ] && [ -f "$SRC" ]; then
+            if [ "$SRC" != "$DST" ]; then
+              cp -f "$SRC" "$DST";
+            else
+              echo ".env.local already in deploy_path, skip copy";
+            fi
           fi
 
       - name: Rebuild and Redeploy Docker app
         run: |
           SERVICE="smart-campus"
           DP="${{ inputs.deploy_path }}"
-          ENV_FILE="${{ inputs.env_file_path }}"
-          if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+          ENV_INPUT="${{ inputs.env_file_path }}"
+          ENV_TARGET="$DP/.env.local"
+          if [ -n "$ENV_INPUT" ] && [ -f "$ENV_INPUT" ]; then
+            ENV_FILE="$ENV_INPUT"
+          elif [ -f "$ENV_TARGET" ]; then
+            ENV_FILE="$ENV_TARGET"
+          else
+            ENV_FILE=""
+          fi
+          if [ -n "$ENV_FILE" ]; then
             ENV_OPT=(--env-file "$ENV_FILE")
           else
             ENV_OPT=()
