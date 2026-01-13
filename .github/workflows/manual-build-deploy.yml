@@ -108,15 +108,42 @@ jobs:
               echo ".env.local already in deploy_path, skip copy";
             fi
           fi
+      
+      - name: Verify files before docker run
+        run: |
+          DP="${{ inputs.deploy_path }}"
+          echo "=== Files in $DP ==="
+          ls -la "$DP"
+          echo ""
+          echo "=== Files in $DP/.next ==="
+          ls -la "$DP/.next" | head -20
+          echo ""
+          echo "=== Check key files ==="
+          [ -f "$DP/package.json" ] && echo "✓ package.json exists" || echo "✗ package.json missing"
+          [ -d "$DP/server" ] && echo "✓ server/ exists" || echo "✗ server/ missing"
+          [ -f "$DP/server/assistant-ws.mjs" ] && echo "✓ assistant-ws.mjs exists" || echo "✗ assistant-ws.mjs missing"
 
       - name: Rebuild and Redeploy Docker app
         run: |
           SERVICE="smart-campus"
           DP="${{ inputs.deploy_path }}"
           
-          # 将 runner 容器内的路径转换为宿主机路径
-          # /www/ace.root -> /www/ace.c
+          # 转换为宿主机路径
           HOST_PATH="${DP/\/www\/ace.root/\/www\/ace.c}"
+          
+          echo "=== Path mapping ==="
+          echo "Runner container path: $DP"
+          echo "Host machine path: $HOST_PATH"
+          echo ""
+          
+          # 验证宿主机路径（从宿主机角度）
+          echo "=== Verify host path exists ==="
+          if [ -d "$HOST_PATH" ]; then
+            echo "✓ Host path exists: $HOST_PATH"
+            ls -la "$HOST_PATH" | head -10
+          else
+            echo "✗ Host path does NOT exist: $HOST_PATH"
+          fi
           
           ENV_INPUT="${{ inputs.env_file_path }}"
           ENV_TARGET="$DP/.env.local"
@@ -137,6 +164,7 @@ jobs:
           
           if command -v docker >/dev/null 2>&1; then
             if [ -f "$DP/docker-compose.yml" ]; then
+              echo "=== Using docker-compose ==="
               if docker compose version >/dev/null 2>&1; then
                 docker compose -f "$DP/docker-compose.yml" --project-directory "$DP" up -d --build --force-recreate --remove-orphans
               elif command -v docker-compose >/dev/null 2>&1; then
@@ -145,18 +173,30 @@ jobs:
                 echo "docker compose not available";
               fi
             else
+              echo "=== Using docker run ==="
+              echo "Removing old container..."
               docker rm -f "$SERVICE" >/dev/null 2>&1 || true
+              
+              echo "Starting new container with volume: $HOST_PATH:/app"
+              
               if [ -f "$DP/server/assistant-ws.mjs" ]; then
                 docker run "${ENV_OPT[@]}" -d --name "$SERVICE" -p 3002:3002 \
                   -e PORT=3002 -e NODE_ENV=production \
                   -v "$HOST_PATH":/app \
-                  node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; node server/assistant-ws.mjs"
+                  node:20-bookworm-slim bash -lc "echo '=== Container started ===' && ls -la /app && echo '' && echo '=== Checking key files ===' && ls -la /app/package.json && ls -la /app/server/ && cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; node server/assistant-ws.mjs"
               else
                 docker run "${ENV_OPT[@]}" -d --name "$SERVICE" -p 3002:3002 \
                   -e PORT=3002 -e NODE_ENV=production \
                   -v "$HOST_PATH":/app \
-                  node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; next start -H 0.0.0.0 -p \${PORT:-3002}"
+                  node:20-bookworm-slim bash -lc "echo '=== Container started ===' && ls -la /app && echo '' && echo '=== Checking key files ===' && ls -la /app/package.json && cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; next start -H 0.0.0.0 -p \${PORT:-3002}"
               fi
+              
+              echo ""
+              echo "=== Waiting for container to start ==="
+              sleep 3
+              
+              echo "=== Container logs ==="
+              docker logs "$SERVICE" 2>&1 | tail -50
             fi
           else
             echo "docker not found"
