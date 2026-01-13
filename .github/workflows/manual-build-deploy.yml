@@ -17,6 +17,11 @@ on:
         type: string
         required: false
         default: "/www/ace.root/smart-campus"
+      env_file_path:
+        description: .env.local 文件路径（服务器 runner 上）
+        type: string
+        required: false
+        default: "/www/ace.root/smart-campus/.env.local"
 
 jobs:
   build:
@@ -92,31 +97,37 @@ jobs:
       - name: Unzip to target
         run: unzip -o ./artifact/next-build.zip -d "${{ inputs.deploy_path }}"
 
-      - name: Restart Docker app
+      - name: Copy env file if provided
+        run: |
+          if [ -n "${{ inputs.env_file_path }}" ] && [ -f "${{ inputs.env_file_path }}" ]; then
+            cp -f "${{ inputs.env_file_path }}" "${{ inputs.deploy_path }}/.env.local";
+          fi
+
+      - name: Rebuild and Redeploy Docker app
         run: |
           SERVICE="smart-campus"
           DP="${{ inputs.deploy_path }}"
+          ENV_FILE="${{ inputs.env_file_path }}"
+          if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+            ENV_OPT=(--env-file "$ENV_FILE")
+          else
+            ENV_OPT=()
+          fi
           if command -v docker >/dev/null 2>&1; then
             if [ -f "$DP/docker-compose.yml" ]; then
               if docker compose version >/dev/null 2>&1; then
-                docker compose -f "$DP/docker-compose.yml" --project-directory "$DP" up -d --no-build
-                docker compose -f "$DP/docker-compose.yml" --project-directory "$DP" restart "$SERVICE" || true
+                docker compose -f "$DP/docker-compose.yml" --project-directory "$DP" up -d --build --force-recreate --remove-orphans
               elif command -v docker-compose >/dev/null 2>&1; then
-                docker-compose -f "$DP/docker-compose.yml" up -d
-                docker-compose -f "$DP/docker-compose.yml" restart "$SERVICE" || true
+                docker-compose -f "$DP/docker-compose.yml" up -d --build --force-recreate --remove-orphans
               else
                 echo "docker compose not available";
               fi
             else
-              if docker ps -a --format '{{.Names}}' | grep -Eq "^${SERVICE}$"; then
-                docker restart "$SERVICE" || true
+              docker rm -f "$SERVICE" >/dev/null 2>&1 || true
+              if [ -f "$DP/server/assistant-ws.mjs" ]; then
+                docker run "${ENV_OPT[@]}" -d --name "$SERVICE" -p 3002:3002 -e PORT=3002 -e NODE_ENV=production -v "$DP":/app node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; node server/assistant-ws.mjs"
               else
-                docker rm -f "$SERVICE" >/dev/null 2>&1 || true
-                if [ -f "$DP/server/assistant-ws.mjs" ]; then
-                  docker run -d --name "$SERVICE" -p 3002:3002 -e PORT=3002 -e NODE_ENV=production -v "$DP":/app node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; node server/assistant-ws.mjs"
-                else
-                  docker run -d --name "$SERVICE" -p 3002:3002 -e PORT=3002 -e NODE_ENV=production -v "$DP":/app node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; next start -H 0.0.0.0 -p \${PORT:-3002}"
-                fi
+                docker run "${ENV_OPT[@]}" -d --name "$SERVICE" -p 3002:3002 -e PORT=3002 -e NODE_ENV=production -v "$DP":/app node:20-bookworm-slim bash -lc "cd /app && npm_config_production=false npm ci --include=dev || npm_config_production=false npm install --include=dev; next start -H 0.0.0.0 -p \${PORT:-3002}"
               fi
             fi
           else
