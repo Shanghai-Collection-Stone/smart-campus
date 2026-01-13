@@ -108,7 +108,26 @@ jobs:
               echo ".env.local already in deploy_path, skip copy";
             fi
           fi
-      
+      - name: Debug path mapping
+        run: |
+          echo "=== Current hostname (should be runner container) ==="
+          hostname
+          
+          echo ""
+          echo "=== Paths in runner container ==="
+          ls -ld /www/ace.root/smart-campus
+          ls -ld /home/runner/work/smart-campus
+          
+          echo ""
+          echo "=== Check if paths point to same inode ==="
+          stat /www/ace.root/smart-campus | grep Inode
+          stat /home/runner/work/smart-campus | grep Inode
+          
+          echo ""
+          echo "=== What Docker sees (from host perspective) ==="
+          # 从宿主机角度检查
+          docker run --rm -v /www/ace.c/smart-campus:/test alpine ls -la /test | head -10
+          docker run --rm -v /www/ace.root/smart-campus:/test alpine ls -la /test 2>&1 | head -10
       - name: Verify files before docker run
         run: |
           DP="${{ inputs.deploy_path }}"
