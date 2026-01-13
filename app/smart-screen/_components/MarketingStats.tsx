@@ -24,7 +24,7 @@ export default function MarketingStats({ stats }: { stats: Stat }) {
   }, [stats.salesPerMinute, trendType]);
 
   return (
-    <div className="grid grid-cols-2 2xl:grid-cols-4 gap-6">
+    <div className="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-4 gap-6">
       <div className="col-span-1 rounded-xl bg-black/30 p-6 ring-1 ring-white/10 flex flex-col justify-center">
         <div className="text-xs text-zinc-400">热门区域 Top3</div>
         <div className="mt-4 grid gap-4">
