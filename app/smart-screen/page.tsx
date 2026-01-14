@@ -26,10 +26,10 @@ export default function SmartScreen() {
   
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 2xl:grid-cols-12 gap-6 min-h-0">
         
-        <section className="col-span-1 lg:col-span-7 2xl:col-span-5 flex flex-col gap-4 min-h-0">
+        <section className="col-span-1 lg:col-span-6 2xl:col-span-5 flex flex-col gap-4 min-h-0">
             {/* 上半部分：AI 和 决策 并列 */}
-            <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4 min-h-[300px]">
-                <div className="rounded-2xl bg-black/40 p-4 backdrop-blur-md ring-1 ring-white/10 flex flex-col overflow-hidden shadow-lg min-w-[280px] h-[450px] xl:h-auto">
+            <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 gap-4 min-h-[300px]">
+                <div className="rounded-2xl bg-black/40 p-4 backdrop-blur-md ring-1 ring-white/10 flex flex-col overflow-hidden shadow-lg h-[580px] sm:h-auto">
                     <div className="flex items-center gap-2 shrink-0 mb-3">
                         <div className="relative">
                             <div className="size-8 rounded-full bg-linear-to-br from-cyan-400 to-violet-600 shadow-[0_0_20px_-5px_rgba(99,102,241,0.6)]" />
@@ -48,7 +48,7 @@ export default function SmartScreen() {
                     <div className="mt-2 shrink-0" />
                 </div>
 
-                <div className="rounded-2xl bg-black/40 p-1 backdrop-blur-md ring-1 ring-white/10 flex flex-col overflow-hidden shadow-lg min-w-[280px] h-[300px] xl:h-auto">
+                <div className="rounded-2xl bg-black/40 p-1 backdrop-blur-md ring-1 ring-white/10 flex flex-col overflow-hidden shadow-lg h-[300px] sm:h-auto">
                     <div className="px-3 py-3 border-b border-white/5 flex justify-between items-center shrink-0">
                         <span className="text-xs text-zinc-400 font-medium">智能决策</span>
                         <span className="flex size-1.5 rounded-full bg-amber-500 animate-pulse" />
@@ -66,8 +66,8 @@ export default function SmartScreen() {
             </div>
         </section>
 
-        <section className="col-span-1 xl:col-span-5 2xl:col-span-7 flex flex-col gap-6 min-h-0">
-            <div className="relative rounded-3xl border border-white/5 bg-black/20 backdrop-blur-sm overflow-hidden shadow-2xl min-h-[260px] xl:h-[420px] 2xl:flex-1 2xl:min-h-[300px]">
+        <section className="col-span-1 lg:col-span-6 2xl:col-span-7 flex flex-col gap-6 min-h-0">
+            <div className="relative rounded-3xl border border-white/5 bg-black/20 backdrop-blur-sm overflow-hidden shadow-2xl h-[500px] xl:h-[520px] 2xl:flex-1 2xl:min-h-[300px]">
                <VisualClient />
                <div className="absolute top-0 left-0 p-4 pointer-events-none">
                   <div className="text-[10px] text-white/20 font-mono tracking-widest">FLOOR PLAN VIEW // LIVE</div>

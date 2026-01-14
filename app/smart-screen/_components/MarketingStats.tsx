@@ -24,7 +24,7 @@ export default function MarketingStats({ stats }: { stats: Stat }) {
   }, [stats.salesPerMinute, trendType]);
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-4 gap-6">
+    <div className="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-4 gap-4 h-full">
       <div className="col-span-1 rounded-xl bg-black/30 p-6 ring-1 ring-white/10 flex flex-col justify-center">
         <div className="text-xs text-zinc-400">热门区域 Top3</div>
         <div className="mt-4 grid gap-4">
@@ -72,25 +72,25 @@ export default function MarketingStats({ stats }: { stats: Stat }) {
       </div>
 
       {/* 合并与重组剩余指标 */}
-      <div className="col-span-1 grid grid-cols-2 gap-4">
-         <div className="rounded-xl bg-black/30 p-5 ring-1 ring-white/10 flex flex-col justify-between">
+      <div className="col-span-1 grid grid-cols-2 gap-3 sm:gap-4">
+         <div className="rounded-xl bg-black/30 p-3 sm:p-5 ring-1 ring-white/10 flex flex-col justify-between">
           <div className="text-xs text-zinc-400">场馆占用</div>
-          <div className="mt-2 text-2xl font-semibold text-emerald-400">{Math.round(stats.occupancyRate)}%</div>
+          <div className="mt-2 text-xl sm:text-2xl font-semibold text-emerald-400">{Math.round(stats.occupancyRate)}%</div>
           <div className="text-[10px] text-zinc-500">舒适</div>
         </div>
-        <div className="rounded-xl bg-black/30 p-5 ring-1 ring-white/10 flex flex-col justify-between">
+        <div className="rounded-xl bg-black/30 p-3 sm:p-5 ring-1 ring-white/10 flex flex-col justify-between">
           <div className="text-xs text-zinc-400">设备在线</div>
-          <div className="mt-2 text-2xl font-semibold text-blue-400">{Math.round(stats.deviceOnlineRate)}%</div>
+          <div className="mt-2 text-xl sm:text-2xl font-semibold text-blue-400">{Math.round(stats.deviceOnlineRate)}%</div>
           <div className="text-[10px] text-zinc-500">运行正常</div>
         </div>
-        <div className="rounded-xl bg-black/30 p-5 ring-1 ring-white/10 flex flex-col justify-between">
+        <div className="rounded-xl bg-black/30 p-3 sm:p-5 ring-1 ring-white/10 flex flex-col justify-between">
           <div className="text-xs text-zinc-400">优惠券核销</div>
-          <div className="mt-2 text-2xl font-semibold text-amber-400">{Math.round(stats.couponRedemptionRate)}%</div>
+          <div className="mt-2 text-xl sm:text-2xl font-semibold text-amber-400">{Math.round(stats.couponRedemptionRate)}%</div>
           <div className="text-[10px] text-zinc-500">转化率良好</div>
         </div>
-        <div className="rounded-xl bg-black/30 p-5 ring-1 ring-white/10 flex flex-col justify-between">
+        <div className="rounded-xl bg-black/30 p-3 sm:p-5 ring-1 ring-white/10 flex flex-col justify-between">
           <div className="text-xs text-zinc-400">AR互动</div>
-          <div className="mt-2 text-2xl font-semibold text-violet-400">{Math.round(stats.arEngagementRate)}%</div>
+          <div className="mt-2 text-xl sm:text-2xl font-semibold text-violet-400">{Math.round(stats.arEngagementRate)}%</div>
           <div className="text-[10px] text-zinc-500">体验人次 +12%</div>
         </div>
       </div>

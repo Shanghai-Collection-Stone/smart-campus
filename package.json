@@ -17,6 +17,8 @@
     "react-dom": "19.2.3",
     "socket.io": "^4.7.5",
     "socket.io-client": "^4.7.5",
+    "alibabacloud-nls": "^1.0.0",
+    "@alicloud/pop-core": "^1.7.12",
     "zod": "^3.23.8"
   },
   "devDependencies": {

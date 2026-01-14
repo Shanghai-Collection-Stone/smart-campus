@@ -17,10 +17,10 @@ export default function ScaleScreen({ width = 1920, height = 1080, children }: S
       const w = window.innerWidth;
       const h = window.innerHeight;
       
-      // 平板及以下设备（例如宽度小于 1280）不进行缩放，采用流式布局
-      if (w < 1280) {
-        setIsLargeScreen(false);
-        if (containerRef.current) {
+      // 平板及以下设备（例如宽度小于 1024）不进行缩放，采用流式布局
+    if (w < 1024) {
+      setIsLargeScreen(false);
+      if (containerRef.current) {
           containerRef.current.style.transform = "none";
           containerRef.current.style.width = "100%";
           containerRef.current.style.height = "auto";

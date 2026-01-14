@@ -20,7 +20,7 @@ async function startServer() {
   await app.prepare();
 
   const loadLocalEnv = () => {
-    const files = [".env", ".env.local"].map((f) => join(process.cwd(), f));
+    const files = [".env.local", ".env"].map((f) => join(process.cwd(), f));
     for (const p of files) {
       if (!existsSync(p)) continue;
       const txt = readFileSync(p, "utf8");
@@ -274,6 +274,37 @@ async function startServer() {
     temperature: Number(process.env.DEEPSEEK_TEMPERATURE || "0.2"),
     timeoutMs: Number(process.env.DEEPSEEK_TIMEOUT_MS || "120000"),
   };
+  const nlsUrl = process.env.ALIYUN_NLS_URL || "wss://nls-gateway.cn-shanghai.aliyuncs.com/ws/v1";
+  const nlsAppKey = process.env.ALIYUN_NLS_APPKEY || "";
+  const akId = process.env.ALIYUN_AK_ID || "";
+  const akSecret = process.env.ALIYUN_AK_SECRET || "";
+  const srLogEnabled = process.env.SR_LOG === "1";
+  let nlsTokenCache = { id: "", expireTime: 0 };
+  const refreshNlsToken = async () => {
+    if (!akId || !akSecret) return;
+    let RPCClient;
+    try {
+      const mod = await import("@alicloud/pop-core");
+      RPCClient = mod && mod.RPCClient ? mod.RPCClient : null;
+    } catch {
+      RPCClient = null;
+    }
+    if (!RPCClient) return;
+    const client = new RPCClient({ accessKeyId: akId, accessKeySecret: akSecret, endpoint: "http://nls-meta.cn-shanghai.aliyuncs.com", apiVersion: "2019-02-28" });
+    let res;
+    try { res = await client.request("CreateToken", {}, { method: "POST" }); } catch { res = null; }
+    const tokenObj = res && res.Token ? res.Token : null;
+    const id = tokenObj && typeof tokenObj.Id === "string" ? tokenObj.Id : "";
+    const expireTime = tokenObj && typeof tokenObj.ExpireTime === "number" ? tokenObj.ExpireTime : 0;
+    if (id && expireTime) { nlsTokenCache = { id, expireTime }; }
+  };
+  const ensureNlsToken = async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const need = !nlsTokenCache.id || nlsTokenCache.expireTime <= now + 60;
+    if (need) await refreshNlsToken();
+    return nlsTokenCache.id;
+  };
+  try { await refreshNlsToken(); } catch {}
   const baseURL = env.baseURL;
   const model = env.key
     ? new ChatOpenAI({
@@ -353,6 +384,240 @@ async function startServer() {
     socket.emit("status", { status: "ready" });
     socket.on("start", () => {
       socket.emit("status", { status: "ready" });
+    });
+
+    const sanitizeVoiceText = (text) => String(text || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^[，。！？、,.!?;:]+/g, "")
+      .replace(/[，。！？、,.!?;:]+$/g, "");
+
+    const normalizeVoiceKey = (text) => sanitizeVoiceText(text).replace(/[\s，。！？、,.!?;:]+/g, "");
+
+    let voiceChain = Promise.resolve();
+    let lastVoiceKey = "";
+    let lastVoiceAt = 0;
+
+    const processUserText = async (text, meta = {}) => {
+      const raw = typeof text === "string" ? text : "";
+      const content = meta && meta.source === "voice" ? sanitizeVoiceText(raw) : raw.trim();
+      if (!content) {
+        if (meta && meta.source === "voice") return;
+        socket.emit("assistant_message", { message: "请输入查询文本" });
+        return;
+      }
+
+      socket.emit("status", { status: "working", ...meta });
+      try {
+        const prev = socketHistories.get(socket.id) || [];
+        const msgs = [new SystemMessage(systemPrompt), ...prev, new HumanMessage(content)];
+        let reply;
+        try {
+          reply = await runAgent(msgs);
+        } catch (e) {
+          console.warn("[assistant] agent failed");
+          throw e;
+        }
+        const nextHistory = msgs.filter((m) => !(m instanceof SystemMessage));
+        socketHistories.set(socket.id, nextHistory);
+        socket.emit("assistant_message", { message: reply });
+        socket.emit("status", { status: "ready" });
+      } catch (e) {
+        const info = formatError(e);
+        console.error("[assistant] user_input error", info);
+        socket.emit("assistant_error", { message: info.message, detail: info });
+        socket.emit("assistant_message", { message: "服务错误" });
+        socket.emit("status", { status: "ready" });
+      }
+    };
+
+    const nlsSessions = new Map();
+
+    let nlsOpening = false;
+
+    const safeJsonParse = (input) => {
+      if (typeof input !== "string") return null;
+      try { return JSON.parse(input); } catch { return null; }
+    };
+
+    const normalizeAliNlsError = (msg) => {
+      const direct = typeof msg === "string" ? safeJsonParse(msg) : (msg && typeof msg === "object" ? msg : null);
+      const wrappedMsg = direct && typeof direct.message === "string" ? safeJsonParse(direct.message) : null;
+      const obj = wrappedMsg || direct;
+
+      const header = obj && typeof obj.header === "object" && obj.header !== null ? obj.header : null;
+      const statusText = header && typeof header.status_text === "string" ? header.status_text : "";
+      const status = header && typeof header.status === "number" ? header.status : null;
+      const taskId = header && typeof header.task_id === "string" ? header.task_id : "";
+      const messageId = header && typeof header.message_id === "string" ? header.message_id : "";
+      const name = header && typeof header.name === "string" ? header.name : "";
+
+      const raw = typeof msg === "string" ? msg : (msg ? JSON.stringify(msg) : "");
+      const message = statusText || (name ? `Task ${name}` : "failed");
+
+      return {
+        message,
+        detail: { status, statusText: statusText || null, taskId: taskId || null, messageId: messageId || null, name: name || null, raw: raw || null },
+      };
+    };
+
+    const closeAliSession = async () => {
+      const n = nlsSessions.get(socket.id);
+      if (!n || !n.st) return;
+      try { await n.st.close(); } catch {}
+      try { n.st.shutdown?.(); } catch {}
+      nlsSessions.delete(socket.id);
+    };
+
+  const openAliNlsSession = async () => {
+    if (!nlsAppKey) { socket.emit("sr:ali:error", { message: "missing_appkey" }); return null; }
+    let SpeechTranscriptionCtor = null;
+    try {
+      const mod = await import("alibabacloud-nls");
+      if (mod && typeof mod.SpeechTranscription === "function") SpeechTranscriptionCtor = mod.SpeechTranscription;
+      const d = mod && mod.default ? mod.default : null;
+      if (!SpeechTranscriptionCtor && d && typeof d.SpeechTranscription === "function") SpeechTranscriptionCtor = d.SpeechTranscription;
+    } catch {}
+    if (!SpeechTranscriptionCtor) {
+      try {
+        const m = await import("module");
+        const req = m && typeof m.createRequire === "function" ? m.createRequire(import.meta.url) : null;
+        const cjs = req ? req("alibabacloud-nls") : null;
+        if (cjs && typeof cjs.SpeechTranscription === "function") SpeechTranscriptionCtor = cjs.SpeechTranscription;
+      } catch {}
+    }
+    if (!SpeechTranscriptionCtor) { socket.emit("sr:ali:error", { message: "sdk_not_installed" }); return null; }
+    const tokenValue = await ensureNlsToken();
+    if (!tokenValue) { socket.emit("sr:ali:error", { message: "token_unavailable" }); return null; }
+    const st = new SpeechTranscriptionCtor({ url: nlsUrl, appkey: nlsAppKey, token: tokenValue });
+      st.on("started", () => {});
+      st.on("changed", (msg) => {
+        try {
+          const o = typeof msg === "string" ? JSON.parse(msg) : msg;
+          const header = o && typeof o.header === "object" && o.header !== null ? o.header : null;
+          const name = header && typeof header.name === "string" ? header.name : "";
+          const t = o && o.payload && typeof o.payload.result === "string" ? o.payload.result : (o && typeof o.result === "string" ? o.result : (o && typeof o.text === "string" ? o.text : ""));
+          if (!t) return;
+
+          if (srLogEnabled) {
+            try {
+              const payload = o && typeof o.payload === "object" && o.payload !== null ? o.payload : null;
+              const idx = payload && typeof payload.index === "number" ? payload.index : null;
+              const time = payload && typeof payload.time === "number" ? payload.time : null;
+              const beginTime = payload && typeof payload.begin_time === "number" ? payload.begin_time : null;
+              console.log("[sr:ali:nls]", { evt: name || "changed", idx, time, beginTime, text: t });
+            } catch {}
+          }
+
+          const isSentenceEnd = name === "SentenceEnd";
+          const isInterim = !name || name === "TranscriptionResultChanged" || name === "RecognitionResultChanged";
+
+          if (isSentenceEnd) {
+            socket.emit("sr:ali:final", { text: t });
+            const cleaned = sanitizeVoiceText(t);
+            const key = normalizeVoiceKey(cleaned);
+            const now = Date.now();
+            if (key && key.length > 1) {
+              if (key !== lastVoiceKey || now - lastVoiceAt > 1200) {
+                lastVoiceKey = key;
+                lastVoiceAt = now;
+                voiceChain = voiceChain
+                  .then(() => processUserText(cleaned, { source: "voice" }))
+                  .catch(() => {});
+              }
+            }
+            return;
+          }
+
+          if (isInterim) socket.emit("sr:ali:interim", { text: t });
+        } catch {}
+      });
+      st.on("completed", (msg) => {
+        try {
+          const o = typeof msg === "string" ? JSON.parse(msg) : msg;
+          if (srLogEnabled) {
+            try {
+              const header = o && typeof o.header === "object" && o.header !== null ? o.header : null;
+              const name = header && typeof header.name === "string" ? header.name : "";
+              console.log("[sr:ali:nls]", { evt: name || "completed" });
+            } catch {}
+          }
+          const t = o && o.payload && typeof o.payload.result === "string" ? o.payload.result : (o && typeof o.result === "string" ? o.result : (o && typeof o.text === "string" ? o.text : ""));
+          if (t) {
+            if (srLogEnabled) {
+              try { console.log("[sr:ali:nls]", { evt: "completed.result", text: t }); } catch {}
+            }
+            socket.emit("sr:ali:final", { text: t });
+            const cleaned = sanitizeVoiceText(t);
+            const key = normalizeVoiceKey(cleaned);
+            const now = Date.now();
+            if (key && key.length > 1) {
+              if (key !== lastVoiceKey || now - lastVoiceAt > 1200) {
+                lastVoiceKey = key;
+                lastVoiceAt = now;
+                voiceChain = voiceChain
+                  .then(() => processUserText(cleaned, { source: "voice" }))
+                  .catch(() => {});
+              }
+            }
+          }
+        } catch {}
+      });
+    st.on("failed", async (msg) => {
+      const info = normalizeAliNlsError(msg);
+      socket.emit("sr:ali:error", info);
+      await closeAliSession();
+    });
+    st.on("closed", async () => {
+      socket.emit("sr:ali:closed", { ok: true });
+      await closeAliSession();
+    });
+      const startParams = st.defaultStartParams();
+      if (startParams && typeof startParams === "object") {
+        startParams.format = "pcm";
+        startParams.sample_rate = 16000;
+        startParams.max_sentence_silence = 2000;
+        startParams.enable_intermediate_result = true;
+        startParams.enable_punctuation_prediction = true;
+        startParams.enable_inverse_text_normalization = true;
+        const vocabId = process.env.ALIYUN_NLS_VOCAB_ID || "";
+        const customizationId = process.env.ALIYUN_NLS_CUSTOMIZATION_ID || "";
+        if (vocabId) startParams.vocabulary_id = vocabId;
+        if (customizationId) startParams.customization_id = customizationId;
+      }
+      try { await st.start(startParams, true, 6000); } catch (e) {
+        socket.emit("sr:ali:error", { message: e && e.message ? e.message : "start_error" });
+        try { await st.close(); } catch {}
+        try { st.shutdown?.(); } catch {}
+        return null;
+      }
+      nlsSessions.set(socket.id, { st });
+      return { st };
+    };
+    socket.on("sr:ali:start", async () => {
+      const existsNls = nlsSessions.get(socket.id);
+      if (existsNls && existsNls.st) return;
+      if (!nlsAppKey) { socket.emit("sr:ali:error", { message: "missing_appkey" }); return; }
+      if (nlsOpening) return;
+      nlsOpening = true;
+      try { await openAliNlsSession(); } finally { nlsOpening = false; }
+    });
+    socket.on("sr:ali:audio", (buf) => {
+      const n = nlsSessions.get(socket.id);
+      if (!n || !n.st) {
+        if (!nlsOpening) {
+          nlsOpening = true;
+          Promise.resolve(openAliNlsSession()).finally(() => { nlsOpening = false; });
+        }
+        return;
+      }
+      try {
+        const b = Buffer.isBuffer(buf) ? buf : (buf instanceof ArrayBuffer ? Buffer.from(new Uint8Array(buf)) : Buffer.from(buf));
+        n.st.sendAudio(b);
+      } catch {}
+    });
+    socket.on("sr:ali:stop", async () => {
+      await closeAliSession();
     });
 
     socket.on("decision:join", () => {
@@ -436,33 +701,10 @@ async function startServer() {
     });
     socket.on("user_input", async (payload) => {
       const text = typeof payload?.text === "string" ? payload.text : "";
-      if (!text) {
-        socket.emit("assistant_message", { message: "请输入查询文本" });
-        return;
-      }
-      socket.emit("status", { status: "working" });
-      try {
-        const prev = socketHistories.get(socket.id) || [];
-        const msgs = [new SystemMessage(systemPrompt), ...prev, new HumanMessage(text)];
-        let reply;
-        try {
-          reply = await runAgent(msgs);
-        } catch (e) {
-          console.warn("[assistant] agent failed");
-          throw e;
-        }
-        const nextHistory = msgs.filter((m) => !(m instanceof SystemMessage));
-        socketHistories.set(socket.id, nextHistory);
-        socket.emit("assistant_message", { message: reply });
-      } catch (e) {
-        const info = formatError(e);
-        console.error("[assistant] user_input error", info);
-        socket.emit("assistant_error", { message: info.message, detail: info });
-        socket.emit("assistant_message", { message: "服务错误" });
-      }
+      await processUserText(text, { source: "text" });
     });
     socketHistories.set(socket.id, socketHistories.get(socket.id) || []);
-    socket.on("disconnect", () => { socketHistories.delete(socket.id); });
+    socket.on("disconnect", async () => { socketHistories.delete(socket.id); await closeAliSession(); });
   });
 
   const listenWithFallback = (srv, initialPort, maxTries = 5) => new Promise((resolve, reject) => {

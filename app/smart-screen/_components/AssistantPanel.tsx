@@ -4,24 +4,8 @@ import { io, Socket } from "socket.io-client";
 import VoiceMeter from "./VoiceMeter";
 import { dispatchPanelAction, isPanelAction } from "./panelBus";
 
-type SRResult = { isFinal: boolean; 0: { transcript: string } };
-type SRResultList = ArrayLike<SRResult>;
-interface SRLikeEvent { resultIndex: number; results: SRResultList }
-interface SpeechRecognition {
-  lang: string;
-  interimResults: boolean;
-  continuous: boolean;
-  start: () => void;
-  stop: () => void;
-  onresult: ((e: SRLikeEvent) => void) | null;
-  onerror: ((e: unknown) => void) | null;
-  onend: ((e: unknown) => void) | null;
-}
-
 declare global {
   interface Window {
-    SpeechRecognition?: new () => SpeechRecognition;
-    webkitSpeechRecognition?: new () => SpeechRecognition;
     webkitAudioContext?: typeof AudioContext;
   }
 }
@@ -35,11 +19,11 @@ declare global {
 export default function AssistantPanel() {
   const [mode, setMode] = useState<"voice" | "chat">("voice");
   const [call, setCall] = useState<"idle" | "active">("idle");
+  const callRef = useRef<"idle" | "active">("idle");
   const [startAt, setStartAt] = useState<number | null>(null);
   const [now, setNow] = useState<number>(0);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const recogRef = useRef<SpeechRecognition | null>(null);
   const [interim, setInterim] = useState("");
   const [finals, setFinals] = useState<string[]>([]);
   const interimRef = useRef<string>("");
@@ -47,30 +31,31 @@ export default function AssistantPanel() {
   type Msg = { id: string; role: "assistant" | "user"; text: string; status: "pending" | "sent" };
   const [messages, setMessages] = useState<Msg[]>([]);
   const [inputText, setInputText] = useState<string>("");
-
-  /**
-   * 获取最新的识别文本
-   * @keyword-en latestText, speechToText
-   */
-  const latestText = useMemo(() => {
-    const im = interim.trim();
-    if (im.length > 0) return im;
-    if (finals.length > 0) return finals[finals.length - 1];
-    return "";
-  }, [interim, finals]);
+  const speechDefault = "aliyun";
 
   const [aiText, setAiText] = useState("");
   const [wsReady, setWsReady] = useState(false);
+  const wsReadyRef = useRef<boolean>(false);
   const [statusText, setStatusText] = useState<string>("");
   const wsRef = useRef<Socket | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const procRef = useRef<ScriptProcessorNode | null>(null);
+  const aliyunActiveRef = useRef<boolean>(false);
   const userScrollRef = useRef<HTMLDivElement | null>(null);
   const aiScrollRef = useRef<HTMLDivElement | null>(null);
   const aiProgressRef = useRef<number>(0);
   const startRecognitionFnRef = useRef<(() => void) | null>(null);
   const stopRecognitionFnRef = useRef<(() => void) | null>(null);
+  const hangupInProgressRef = useRef<boolean>(false);
   const lastResponseAtRef = useRef<number | null>(null);
-  const awaitingRef = useRef<boolean>(false);
   const [sendingSoon, setSendingSoon] = useState<boolean>(false);
+  const voiceHadInputRef = useRef<boolean>(false);
+  const srDebounceTimerRef = useRef<number | null>(null);
+  const srSendGraceTimerRef = useRef<number | null>(null);
+  const lastVoiceWorkingAtRef = useRef<number>(0);
+  const lastAutoSentKeyRef = useRef<string>("");
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(true);
   const [ttsStyle, setTtsStyle] = useState<"default" | "jarvis">("default");
   const ttsSynthRef = useRef<SpeechSynthesis | null>(null);
@@ -79,91 +64,71 @@ export default function AssistantPanel() {
   const speakFnRef = useRef<(text: string) => void>(() => {});
   const progressTimerRef = useRef<number | null>(null);
   const isSilentRef = useRef<boolean>(false);
-  const silenceTimerRef = useRef<number | null>(null);
-  const pendingAccumulateRef = useRef<string>("");
-  const pendingMessageIdRef = useRef<string | null>(null);
-  const pendingTextRef = useRef<string>("");
-  const sendIntentRef = useRef<boolean>(false);
-  const voiceFramesRef = useRef<number>(0);
-  const silenceFramesRef = useRef<number>(0);
-  const SILENCE_GATE = Number(process.env.NEXT_PUBLIC_SILENCE_GATE ?? "0.06");
-  const VOICE_FRAMES_MIN = Number(process.env.NEXT_PUBLIC_VOICE_FRAMES_MIN ?? "4");
-  const SILENCE_FRAMES_MIN = Number(process.env.NEXT_PUBLIC_SILENCE_FRAMES_MIN ?? "4");
 
   
 
   const makeId = () => Math.random().toString(36).slice(2) + String(Date.now());
-  const composeText = () => `${pendingAccumulateRef.current} ${finals.join(" ")} ${interimRef.current}`.trim();
-  const upsertPending = (text: string) => {
-    if (!text) { console.log("[assistant] upsertPending: empty text, skip"); return; }
-    pendingTextRef.current = text;
-    setMessages((prev) => {
-      console.log('开始修改了',prev.length,prev);
-      const pid = pendingMessageIdRef.current;
-      if (pid) {
-        const exists = prev.some((m) => m.id === pid);
-        console.log("[assistant "+pid+"] upsertPending: update", { id: pid, text, prevLen: prev.length, exists });
-        if (!exists) return [...prev, { id: pid, role: "user", text, status: "pending" }];
-        return prev.map((m) => (m.id === pid ? { ...m, text } : m));
-      }
-      const nid = makeId();
-      pendingMessageIdRef.current = nid;
-      console.log("[assistant] upsertPending: create", { id: nid, text });
-      console.log([...prev, { id: nid, role: "user", text, status: "pending" }]);
-      return [...prev, { id: nid, role: "user", text, status: "pending" }];
-    });
-  };
-  const markPendingSent = () => {
-    const pid = pendingMessageIdRef.current;
-    if (!pid) return;
-    console.log("[assistant] markPendingSent", { id: pid });
-    setMessages((prev) => prev.map((m) => (m.id === pid ? { ...m, status: "sent" } : m)));
-    pendingMessageIdRef.current = null;
+
+  const sanitizeTranscriptText = (text: string) => {
+    return String(text || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^[，。！？、,.!?;:]+/g, "")
+      .replace(/[，。！？、,.!?;:]+$/g, "");
   };
 
-  const scheduleSend = () => {
-    const composed = composeText();
-    if (!composed) return;
-    upsertPending(composed);
-    if (isSilentRef.current) {
-      if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-      setSendingSoon(true);
-      silenceTimerRef.current = window.setTimeout(() => {
-        silenceTimerRef.current = null;
-        const s = wsRef.current;
-        if (s && wsReady) {
-          try { s.emit("user_input", { text: composed }); console.log("[assistant] debounced-send", { text: composed }); } catch {}
-          awaitingRef.current = true;
-        } else {
-          console.log("[assistant] debounced-send skip: ws not ready");
-        }
-        setSendingSoon(false);
-        sendIntentRef.current = false;
-      }, 3000);
-    } else {
-      sendIntentRef.current = true;
+  const normalizeTranscriptKey = (text: string) => {
+    return sanitizeTranscriptText(text).replace(/[\s，。！？、,.!?;:]+/g, "");
+  };
+
+  const mergeAliInterim = (prev: string, next: string) => {
+    const pRaw = sanitizeTranscriptText(prev);
+    const nRaw = sanitizeTranscriptText(next);
+    const pKey = normalizeTranscriptKey(pRaw);
+    const nKey = normalizeTranscriptKey(nRaw);
+    if (!pKey) return nRaw;
+    if (!nKey) return pRaw;
+    if (nKey.startsWith(pKey) || nKey.endsWith(pKey) || nKey.includes(pKey)) return nRaw;
+    if (pKey.startsWith(nKey) || pKey.endsWith(nKey) || pKey.includes(nKey)) return pRaw;
+    const hasZh = /[\u4e00-\u9fff]/.test(pRaw) || /[\u4e00-\u9fff]/.test(nRaw);
+    if (hasZh && nRaw.length <= 2) return (pRaw + nRaw).replace(/\s+/g, "");
+    if (!hasZh && nRaw.length <= 2) return `${pRaw} ${nRaw}`.trim();
+    return nRaw.length >= pRaw.length ? nRaw : pRaw;
+  };
+
+  const mergeAliFinals = (prev: string[], nextFinal: string) => {
+    const nRaw = sanitizeTranscriptText(nextFinal);
+    const nKey = normalizeTranscriptKey(nRaw);
+    if (!nKey) return prev;
+
+    const lastRaw = prev.length > 0 ? sanitizeTranscriptText(prev[prev.length - 1] || "") : "";
+    const lastKey = normalizeTranscriptKey(lastRaw);
+    if (!lastKey) return [...prev, nRaw];
+    if (nKey === lastKey) return prev;
+    if (nKey.startsWith(lastKey) || nKey.endsWith(lastKey) || nKey.includes(lastKey)) return [...prev.slice(0, -1), nRaw];
+    if (lastKey.startsWith(nKey) || lastKey.endsWith(nKey) || lastKey.includes(nKey)) return prev;
+    return [...prev, nRaw];
+  };
+
+  const composeDisplayText = (finalList: string[], im: string) => {
+    const finalsText = finalList.map((x) => sanitizeTranscriptText(x)).filter(Boolean).join(" ").trim();
+    const interimText = sanitizeTranscriptText(im);
+    if (!finalsText) return interimText;
+    if (!interimText) return finalsText;
+    const finalsKey = normalizeTranscriptKey(finalsText);
+    const interimKey = normalizeTranscriptKey(interimText);
+    if (!interimKey) return finalsText;
+    if (finalsKey.endsWith(interimKey) || finalsKey.includes(interimKey)) return finalsText;
+    if (interimKey.startsWith(finalsKey)) return interimText;
+    if (interimKey.length <= 2) {
+      const hasZh = /[\u4e00-\u9fff]/.test(finalsText) || /[\u4e00-\u9fff]/.test(interimText);
+      const combined = hasZh ? `${finalsText}${interimText}` : `${finalsText} ${interimText}`;
+      return sanitizeTranscriptText(combined);
     }
+    return `${finalsText} ${interimText}`.trim();
   };
 
-  const sendNow = (text: string) => {
-    const payload = String(text || "").trim();
-    if (!payload) return;
-    upsertPending(payload);
-    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-    setSendingSoon(false);
-    const s = wsRef.current;
-    if (s && wsReady) {
-      try { s.emit("user_input", { text: payload }); console.log("[assistant] sendNow", { text: payload }); } catch {}
-      awaitingRef.current = true;
-    } else {
-      console.log("[assistant] sendNow skip: ws not ready");
-    }
-  };
-
-  // 直接使用 latestText 展示，去除副作用更新以满足 lint 规则
-
-  
-
+  const latestText = composeDisplayText(finals, interim);
   const ensureSynth = () => {
     if (typeof window === "undefined") return null;
     const synth = window.speechSynthesis;
@@ -230,7 +195,7 @@ export default function AssistantPanel() {
 
     utt.onstart = () => {
       isSilentRef.current = false;
-      if (stopRecognitionFnRef.current) {
+      if (!hangupInProgressRef.current && callRef.current === "active" && stopRecognitionFnRef.current) {
         try { stopRecognitionFnRef.current(); } catch {}
       }
       // 启动估算计时器，以防 boundary 不触发
@@ -262,20 +227,24 @@ export default function AssistantPanel() {
       updateAiScrollProgress(0);
       aiProgressRef.current = 0;
       if (progressTimerRef.current) { clearInterval(progressTimerRef.current); progressTimerRef.current = null; }
-      if (startRecognitionFnRef.current && call === "active") {
+      const mic = streamRef.current;
+      const hasLiveMic = !!mic && mic.getAudioTracks().some((t) => t.readyState === "live");
+      if (!hangupInProgressRef.current && hasLiveMic && callRef.current === "active" && startRecognitionFnRef.current) {
         try { startRecognitionFnRef.current(); } catch {}
       }
     };
 
     currentUtterRef.current = utt;
     synth.speak(utt);
-  }, [ttsEnabled, ttsStyle, call, updateAiScrollProgress]);
+  }, [ttsEnabled, ttsStyle, updateAiScrollProgress]);
 
   useEffect(() => { speakFnRef.current = speak; }, [speak]);
 
   useEffect(() => { finalsRef.current = finals; }, [finals]);
 
   const stopSpeak = () => {
+    const mic = streamRef.current;
+    const hasLiveMic = !!mic && mic.getAudioTracks().some((t) => t.readyState === "live");
     const synth = ttsSynthRef.current ?? (typeof window !== "undefined" ? window.speechSynthesis : null);
     if (synth) {
       try { synth.cancel(); } catch {}
@@ -284,6 +253,10 @@ export default function AssistantPanel() {
     currentUtterRef.current = null;
     updateAiScrollProgress(0);
     aiProgressRef.current = 0;
+
+    if (!hangupInProgressRef.current && hasLiveMic && callRef.current === "active" && startRecognitionFnRef.current) {
+      try { startRecognitionFnRef.current(); } catch {}
+    }
   };
 
   const handleToggleTts = useCallback(() => {
@@ -324,6 +297,8 @@ export default function AssistantPanel() {
     };
   }, []);
 
+  useEffect(() => { callRef.current = call; }, [call]);
+
   useEffect(() => {
     if (!ttsEnabled) {
       try { stopSpeak(); } catch {}
@@ -333,6 +308,126 @@ export default function AssistantPanel() {
   /**
    * 组件挂载即建立 WS 连接，卸载时关闭
    */
+  useEffect(() => {
+    streamRef.current = stream;
+  }, [stream]);
+
+  const resampleTo16k = (input: Float32Array, inputRate: number): Int16Array => {
+    const targetRate = 16000;
+    const ratio = inputRate / targetRate;
+    const length = Math.floor(input.length / ratio);
+    const out = new Int16Array(length);
+    let i = 0;
+    while (i < length) {
+      const idx = Math.floor(i * ratio);
+      const s = input[idx];
+      const v = s < -1 ? -1 : s > 1 ? 1 : s;
+      out[i] = v < 0 ? Math.round(v * 0x8000) : Math.round(v * 0x7fff);
+      i += 1;
+    }
+    return out;
+  };
+
+  const ensureAliyunAudioPipeline = (s: MediaStream) => {
+    const ACtor = typeof window !== "undefined" ? (window.AudioContext || window.webkitAudioContext) : null;
+    if (!ACtor) { setErr("音频上下文不可用"); return; }
+    const existing = audioCtxRef.current;
+    const ctx = existing && existing.state === "closed" ? new ACtor() : (existing ?? new ACtor());
+    audioCtxRef.current = ctx;
+    try {
+      if (ctx.state === "suspended") {
+        Promise.resolve(ctx.resume()).catch(() => {});
+      }
+    } catch {}
+
+    try {
+      const oldSrc = sourceRef.current;
+      if (oldSrc) oldSrc.disconnect();
+    } catch {}
+    sourceRef.current = null;
+
+    try {
+      const oldProc = procRef.current;
+      if (oldProc) { oldProc.disconnect(); oldProc.onaudioprocess = null; }
+    } catch {}
+    procRef.current = null;
+
+    const src = ctx.createMediaStreamSource(s);
+    sourceRef.current = src;
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    procRef.current = proc;
+    proc.onaudioprocess = (e: AudioProcessingEvent) => {
+      if (!aliyunActiveRef.current) return;
+      const sk = wsRef.current;
+      if (!sk || !wsReadyRef.current) return;
+      const buf = e.inputBuffer.getChannelData(0);
+      const pcm = resampleTo16k(buf, ctx.sampleRate);
+      try { sk.emit("sr:ali:audio", pcm.buffer); } catch {}
+    };
+    try { src.connect(proc); } catch {}
+    try { proc.connect(ctx.destination); } catch {}
+  };
+
+  const requestMicStream = (): Promise<MediaStream> => {
+    if (typeof window === "undefined") return Promise.reject(new Error("not_in_browser"));
+    if (!window.isSecureContext) return Promise.reject(new Error("insecure_context"));
+    const nav = window.navigator;
+    const md = nav.mediaDevices;
+    const gum = md && typeof md.getUserMedia === "function" ? md.getUserMedia.bind(md) : null;
+    if (gum) {
+      return gum({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: { ideal: 1 }, sampleRate: { ideal: 16000 } } });
+    }
+
+    const legacyGum = Reflect.get(nav, "getUserMedia") ?? Reflect.get(nav, "webkitGetUserMedia") ?? Reflect.get(nav, "mozGetUserMedia");
+    if (typeof legacyGum !== "function") return Promise.reject(new Error("getUserMedia_unavailable"));
+    return new Promise<MediaStream>((resolve, reject) => {
+      try {
+        legacyGum.call(nav, { audio: true }, resolve, reject);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  };
+
+  const startAliyun = (ms?: MediaStream) => {
+    const s = ms ?? streamRef.current;
+    if (!s) { setErr("麦克风未就绪"); return; }
+    ensureAliyunAudioPipeline(s);
+    aliyunActiveRef.current = true;
+    const sock = wsRef.current;
+    if (sock && wsReadyRef.current) {
+      try { sock.emit("sr:ali:start"); } catch {}
+    } else {
+      setErr("正在连接语音服务…");
+      try { sock?.once?.("connect", () => { try { wsRef.current?.emit("sr:ali:start"); setErr(null); } catch {} }); } catch {}
+    }
+    setErr(null);
+  };
+
+  const stopAliyun = () => {
+    const sk = wsRef.current;
+    if (sk && wsReadyRef.current) { try { sk.emit("sr:ali:stop"); } catch {} }
+    try {
+      const p = procRef.current; const src = sourceRef.current; const ctx = audioCtxRef.current;
+      if (p) { p.disconnect(); p.onaudioprocess = null; }
+      if (src) { src.disconnect(); }
+      if (ctx) { /* keep context for reuse */ }
+    } catch {}
+    procRef.current = null;
+    sourceRef.current = null;
+    aliyunActiveRef.current = false;
+  };
+
+  const releaseAliyunAudioContext = () => {
+    const ctx = audioCtxRef.current;
+    audioCtxRef.current = null;
+    try {
+      if (ctx && ctx.state !== "closed") {
+        Promise.resolve(ctx.close()).catch(() => {});
+      }
+    } catch {}
+  };
+
   useEffect(() => {
     const origin = typeof window !== "undefined" ? window.location.origin : undefined;
     const s = io(origin, {
@@ -344,17 +439,24 @@ export default function AssistantPanel() {
       reconnectionDelayMax: 1500,
     });
     s.on("connect", () => {
+      wsReadyRef.current = true;
       setWsReady(true);
       setStatusText("已连接");
       s.emit("start");
       s.emit("panel:join");
       console.log("[assistant] ws connect", { id: s.id, path: String(s.io?.opts?.path ?? "") });
+      if (callRef.current === "active" && speechDefault === "aliyun" && !aliyunActiveRef.current) {
+        try { startAliyun(); } catch {}
+      }
     });
     s.on("disconnect", () => {
+      wsReadyRef.current = false;
       setWsReady(false);
       setStatusText("未连接");
+      console.log("[assistant] ws disconnect");
     });
     s.on("connect_error", (err: Error) => {
+      wsReadyRef.current = false;
       setWsReady(false);
       setStatusText("连接错误");
       console.log("[assistant] ws connect_error", { message: err.message });
@@ -368,8 +470,19 @@ export default function AssistantPanel() {
       console.log("[assistant] ws reconnect_attempt", { attempt: n });
     });
     s.on("status", (payload: unknown) => {
-      const obj = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : null;
-      const st = obj && typeof obj.status === "string" ? obj.status : "";
+      if (typeof payload !== "object" || payload === null) return;
+      const stVal = Reflect.get(payload, "status");
+      const st = typeof stVal === "string" ? stVal : "";
+      const sourceVal = Reflect.get(payload, "source");
+      if (st === "working" && sourceVal === "voice") {
+        lastVoiceWorkingAtRef.current = Date.now();
+        if (srDebounceTimerRef.current) { window.clearTimeout(srDebounceTimerRef.current); srDebounceTimerRef.current = null; }
+        if (srSendGraceTimerRef.current) { window.clearTimeout(srSendGraceTimerRef.current); srSendGraceTimerRef.current = null; }
+        const composed = composeDisplayText(finalsRef.current, interimRef.current);
+        const key = normalizeTranscriptKey(composed);
+        if (key) lastAutoSentKeyRef.current = key;
+        setSendingSoon(true);
+      }
       let text = "";
       if (st === "ready") text = "就绪";
       else if (st === "working") text = "处理中";
@@ -378,57 +491,160 @@ export default function AssistantPanel() {
     });
     s.on("assistant_message", (payload: { message: string }) => {
       if (payload?.message) {
-        const composedBeforeReset = `${pendingAccumulateRef.current} ${finalsRef.current.join(" ")} ${interimRef.current}`.trim();
-        if (pendingMessageIdRef.current) { markPendingSent(); }
+        if (srDebounceTimerRef.current) { window.clearTimeout(srDebounceTimerRef.current); srDebounceTimerRef.current = null; }
+        if (srSendGraceTimerRef.current) { window.clearTimeout(srSendGraceTimerRef.current); srSendGraceTimerRef.current = null; }
         setAiText(payload.message);
         try { const el = aiScrollRef.current; if (el) { el.scrollLeft = 0; } } catch {}
         aiProgressRef.current = 0;
         lastResponseAtRef.current = Date.now();
-        awaitingRef.current = false;
         setMessages((prev) => [...prev, { id: makeId(), role: "assistant", text: payload.message, status: "sent" }]);
         console.log("[assistant] ws assistant_message", { message: payload.message });
         setSendingSoon(false);
+        voiceHadInputRef.current = false;
         try { speakFnRef.current(payload.message); } catch {}
         setFinals([]);
         setInterim("");
         interimRef.current = "";
-        pendingAccumulateRef.current = "";
-        pendingTextRef.current = "";
         isSilentRef.current = false;
-        voiceFramesRef.current = 0;
-        silenceFramesRef.current = 0;
-        sendIntentRef.current = false;
       }
     });
     s.on("assistant_error", (payload: { message?: string; detail?: unknown }) => {
+      if (srDebounceTimerRef.current) { window.clearTimeout(srDebounceTimerRef.current); srDebounceTimerRef.current = null; }
+      if (srSendGraceTimerRef.current) { window.clearTimeout(srSendGraceTimerRef.current); srSendGraceTimerRef.current = null; }
       const msg = typeof payload?.message === "string" ? payload.message : "服务错误";
       setErr(msg);
-      markPendingSent();
       setMessages((prev) => [...prev, { id: makeId(), role: "assistant", text: `[ERROR] ${msg}` , status: "sent" }]);
       setSendingSoon(false);
-      awaitingRef.current = false;
+      voiceHadInputRef.current = false;
+    });
+    s.on("sr:ali:interim", (payload: unknown) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const tVal = Reflect.get(payload, "text");
+      const t = typeof tVal === "string" ? tVal : "";
+      if (!t) return;
+      if (currentUtterRef.current) return;
+
+      if (process.env.NODE_ENV !== "production") {
+        try {
+          console.log("[sr:ali:interim]", { text: t, at: Date.now() });
+        } catch {}
+      }
+
+      const merged = mergeAliInterim(interimRef.current, t);
+      setInterim(merged);
+      interimRef.current = merged;
+      voiceHadInputRef.current = true;
+
+      if (srDebounceTimerRef.current) {
+        window.clearTimeout(srDebounceTimerRef.current);
+        srDebounceTimerRef.current = null;
+      }
+      if (srSendGraceTimerRef.current) {
+        window.clearTimeout(srSendGraceTimerRef.current);
+        srSendGraceTimerRef.current = null;
+      }
+      srDebounceTimerRef.current = window.setTimeout(() => {
+        srDebounceTimerRef.current = null;
+        if (currentUtterRef.current) return;
+        if (Date.now() - lastVoiceWorkingAtRef.current < 4000) return;
+        const composed = composeDisplayText(finalsRef.current, interimRef.current);
+        const finalText = sanitizeTranscriptText(composed);
+        const key = normalizeTranscriptKey(finalText);
+        if (!key) return;
+        if (key === lastAutoSentKeyRef.current) return;
+        const sock = wsRef.current;
+        if (!sock || !wsReadyRef.current) return;
+
+        setSendingSoon(true);
+        srSendGraceTimerRef.current = window.setTimeout(() => {
+          srSendGraceTimerRef.current = null;
+          if (currentUtterRef.current) return;
+          if (Date.now() - lastVoiceWorkingAtRef.current < 4000) return;
+          if (!wsReadyRef.current) return;
+          const s2 = wsRef.current;
+          if (!s2) return;
+          try {
+            s2.emit("user_input", { text: finalText, source: "voice", via: "interim_gap" });
+            lastAutoSentKeyRef.current = key;
+          } catch {}
+        }, 350);
+      }, 2000);
+    });
+    s.on("sr:ali:final", (payload: unknown) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const tVal = Reflect.get(payload, "text");
+      const t = typeof tVal === "string" ? tVal : "";
+      if (!t) return;
+      if (currentUtterRef.current) return;
+
+      if (process.env.NODE_ENV !== "production") {
+        try {
+          console.log("[sr:ali:final]", { text: t, at: Date.now() });
+        } catch {}
+      }
+
+      setFinals((prev) => {
+        const next = mergeAliFinals(prev, t);
+        finalsRef.current = next;
+        return next;
+      });
+      setInterim("");
+      interimRef.current = "";
+      voiceHadInputRef.current = true;
+    });
+    s.on("sr:ali:error", (payload: unknown) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const rawMsgVal = Reflect.get(payload, "message");
+      const rawMsg = typeof rawMsgVal === "string" ? rawMsgVal : "";
+      const detailVal = Reflect.get(payload, "detail");
+      const detail = typeof detailVal === "object" && detailVal !== null ? detailVal : null;
+      const statusTextVal = detail ? Reflect.get(detail, "statusText") : null;
+      const statusText = typeof statusTextVal === "string" ? statusTextVal : "";
+      const m = statusText || rawMsg || "识别错误";
+
+      if (process.env.NODE_ENV !== "production") {
+        try {
+          console.log("[sr:ali:error]", { message: m, detail, at: Date.now() });
+        } catch {}
+      }
+
+      setErr(m);
     });
     s.on("panel:action", (payload: unknown) => {
-      const p = (payload ?? {}) as Record<string, unknown>;
-      const id = typeof p.id === "string" ? p.id : "";
-      const act = p.action as unknown;
+      if (typeof payload !== "object" || payload === null) return;
+      const idVal = Reflect.get(payload, "id");
+      const id = typeof idVal === "string" ? idVal : "";
+      const act = Reflect.get(payload, "action");
       if (!isPanelAction(act)) { try { s.emit("panel:done", { id, ok: false, message: "invalid action" }); } catch {} ; return; }
-      try { (window as unknown as { panelClearAck?: () => void }).panelClearAck?.(); } catch {}
+      try {
+        const clearAck = Reflect.get(window, "panelClearAck");
+        if (typeof clearAck === "function") clearAck();
+      } catch {}
       try { dispatchPanelAction(act); } catch {}
       setTimeout(() => {
         let ok = true; let message: string | undefined;
         try {
-          const ack = (window as unknown as { panelGetAck?: () => { ok: boolean; message?: string } | null }).panelGetAck?.();
-          if (ack) { ok = ack.ok; message = ack.message; }
+          const getAck = Reflect.get(window, "panelGetAck");
+          if (typeof getAck === "function") {
+            const ack = getAck();
+            if (typeof ack === "object" && ack !== null) {
+              const okVal = Reflect.get(ack, "ok");
+              const msgVal = Reflect.get(ack, "message");
+              if (typeof okVal === "boolean") ok = okVal;
+              if (typeof msgVal === "string") message = msgVal;
+            }
+          }
         } catch {}
         try { s.emit("panel:done", { id, ok, message }); } catch {}
       }, 60);
     });
-    s.on("disconnect", () => { setWsReady(false); console.log("[assistant] ws disconnect"); });
     wsRef.current = s;
     return () => {
+      if (srDebounceTimerRef.current) { window.clearTimeout(srDebounceTimerRef.current); srDebounceTimerRef.current = null; }
+      if (srSendGraceTimerRef.current) { window.clearTimeout(srSendGraceTimerRef.current); srSendGraceTimerRef.current = null; }
       try { s.disconnect(); } catch {}
       wsRef.current = null;
+      wsReadyRef.current = false;
       setWsReady(false);
     };
   }, []);
@@ -460,91 +676,14 @@ export default function AssistantPanel() {
     return `${m}:${s}`;
   }, [now, startAt]);
 
-/**
- * 根据音量阈值进行 2s 静默判定并发送文本
- * - 静默开始：启动 2s 计时器
- * - 计时期间若再次说话：取消发送；如已收到回复则中断并重连；如未发送则累积文本
- * @keyword-en rmsGate, silenceTimeout, reconnectOnInterrupt
- */
-  const handleRms = (rms: number) => {
-    const speaking = !!currentUtterRef.current;
-    if (speaking) return;
-    if (rms >= SILENCE_GATE) {
-      voiceFramesRef.current += 1;
-      silenceFramesRef.current = 0;
-      if (voiceFramesRef.current >= VOICE_FRAMES_MIN) {
-        if (isSilentRef.current) isSilentRef.current = false;
-        if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-        setSendingSoon(false);
-      }
-    } else {
-      silenceFramesRef.current += 1;
-      voiceFramesRef.current = 0;
-      if (silenceFramesRef.current >= SILENCE_FRAMES_MIN) {
-        if (!isSilentRef.current) {
-          isSilentRef.current = true;
-          const txt = composeText();
-          if (txt) scheduleSend();
-          else if (sendIntentRef.current) scheduleSend();
-        }
-      }
-    }
-  };
-
   /**
    * 开启语音识别服务
    * @keyword-en startRecognition, speechRecognition
    */
   
 
-  const getSpeechRecognitionCtor = (): (new () => SpeechRecognition) | null => {
-    if (typeof window === "undefined") return null;
-    if (typeof window.SpeechRecognition === "function") return window.SpeechRecognition;
-    if (typeof window.webkitSpeechRecognition === "function") return window.webkitSpeechRecognition;
-    return null;
-  };
-
   const startRecognition = () => {
-    const Ctor = getSpeechRecognitionCtor();
-    if (!Ctor) {
-      setErr("浏览器不支持语音识别");
-      return;
-    }
-    const r = new Ctor();
-    r.lang = "zh-CN";
-    r.interimResults = true;
-    r.continuous = true;
-    r.onresult = (e: SRLikeEvent) => {
-      if (currentUtterRef.current) return;
-      let f = "";
-      let im = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) f += t;
-        else im += t;
-      }
-      if (f) setFinals((prev) => [...prev, f]);
-      setInterim(im);
-      interimRef.current = im;
-      const nextText = `${pendingAccumulateRef.current} ${[...finals, f].join(" ")} ${im}`.trim();
-      if (nextText) {
-        if (f) {
-          console.log('sendNow');
-          sendNow(nextText);
-        } else {
-          upsertPending(nextText);
-          scheduleSend();
-        }
-      }
-      console.log("[assistant] onresult", { final: f, interim: im });
-    };
-    r.onerror = () => {};
-    r.onend = () => {
-      if (recogRef.current) r.start();
-    };
-    recogRef.current = r;
-    console.log("[assistant] startRecognition");
-    r.start();
+    startAliyun();
     setErr(null);
   };
 
@@ -553,24 +692,15 @@ export default function AssistantPanel() {
    * @keyword-en stopRecognition, endSpeech
    */
   const stopRecognition = () => {
-    const r = recogRef.current;
-    if (r) {
-      try { r.onend = null; r.stop(); } catch {}
-    }
-    recogRef.current = null;
     setInterim("");
     interimRef.current = "";
-    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+    setSendingSoon(false);
+    voiceHadInputRef.current = false;
     isSilentRef.current = false;
-    pendingAccumulateRef.current = "";
-    const pid = pendingMessageIdRef.current;
-    if (pid) {
-      pendingMessageIdRef.current = null;
-    }
-    pendingTextRef.current = "";
-    voiceFramesRef.current = 0;
-    silenceFramesRef.current = 0;
+    if (srDebounceTimerRef.current) { window.clearTimeout(srDebounceTimerRef.current); srDebounceTimerRef.current = null; }
+    if (srSendGraceTimerRef.current) { window.clearTimeout(srSendGraceTimerRef.current); srSendGraceTimerRef.current = null; }
     console.log("[assistant] stopRecognition");
+    try { stopAliyun(); } catch {}
   };
 
   useEffect(() => {
@@ -613,7 +743,7 @@ export default function AssistantPanel() {
           <span className="rounded-full px-2 py-1 text-[10px] bg-white/5 text-zinc-400 ring-1 ring-white/10">{statusText}</span>
         ) : null}
         {sendingSoon ? (
-          <span className="rounded-full px-2 py-1 text-[10px] bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30">即将发送</span>
+          <span className="rounded-full px-2 py-1 text-[10px] bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30">发送中…</span>
         ) : null}
         {err ? (
           <span className="rounded-full px-2 py-1 text-[10px] bg-rose-500/10 text-rose-400 ring-1 ring-rose-500/30">{err}</span>
@@ -658,7 +788,7 @@ export default function AssistantPanel() {
             {/* 底部控制与能量柱区域开始 */}
             <div className="flex items-center gap-4 bg-black/40 rounded-2xl p-3 ring-1 ring-white/5">
               <div className="flex-1 flex items-center justify-center h-[clamp(36px,3.6vw,52px)]">
-                <VoiceMeter active={call === "active"} stream={stream} denoise={true} onRms={handleRms} sendingSoon={sendingSoon} />
+                <VoiceMeter active={call === "active"} stream={stream} denoise={true} sendingSoon={sendingSoon} />
               </div>
 
               <button
@@ -686,6 +816,7 @@ export default function AssistantPanel() {
                 <button
                   className="mt-[10px] group relative flex items-center justify-center rounded-xl bg-rose-500/10 text-rose-500 ring-1 ring-rose-500/30 transition-all hover:bg-rose-500 hover:text-white w-[clamp(36px,3.8vw,48px)] h-[clamp(36px,3.8vw,48px)]"
                   onClick={() => {
+                    hangupInProgressRef.current = true;
                     setCall("idle");
                     setStartAt(null);
                     if (stream) {
@@ -697,12 +828,12 @@ export default function AssistantPanel() {
                     interimRef.current = "";
                     stopRecognition();
                     stopSpeak();
-                    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+                    releaseAliyunAudioContext();
                     isSilentRef.current = false;
-                    awaitingRef.current = false;
-                    pendingAccumulateRef.current = "";
                     lastResponseAtRef.current = null;
-                    sendIntentRef.current = false;
+                    setSendingSoon(false);
+                    voiceHadInputRef.current = false;
+                    hangupInProgressRef.current = false;
                   }}
                 >
                   <svg className="fill-none stroke-current w-[clamp(18px,2vw,22px)] h-[clamp(18px,2vw,22px)]" viewBox="0 0 24 24">
@@ -713,8 +844,7 @@ export default function AssistantPanel() {
                 <button
                   className="mt-[10px] group relative flex items-center justify-center rounded-xl bg-cyan-500/10 text-cyan-400 ring-1 ring-cyan-500/30 transition-all hover:bg-cyan-500 hover:text-white hover:shadow-[0_0_15px_rgba(6,182,212,0.4)] active:scale-95 w-[clamp(36px,3.8vw,48px)] h-[clamp(36px,3.8vw,48px)]"
                   onClick={() => {
-                    navigator.mediaDevices
-                      .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } } })
+                    requestMicStream()
                       .then((s) => {
                         setStream(s);
                         setCall("active");
@@ -723,16 +853,19 @@ export default function AssistantPanel() {
                         setFinals([]);
                         setInterim("");
                         interimRef.current = "";
-                        startRecognition();
+                        ensureAliyunAudioPipeline(s);
+                        startAliyun(s);
                         if (aiText) setAiText("");
-                        if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
                         isSilentRef.current = false;
-                        awaitingRef.current = false;
-                        pendingAccumulateRef.current = "";
+                        setSendingSoon(false);
+                        voiceHadInputRef.current = false;
                         lastResponseAtRef.current = null;
                       })
-                      .catch(() => {
-                        setErr("麦克风不可用或被拒绝");
+                      .catch((e: unknown) => {
+                        const msg = e instanceof Error ? e.message : String(e || "");
+                        if (msg === "insecure_context") setErr("需要HTTPS或localhost才能使用麦克风");
+                        else if (msg === "getUserMedia_unavailable") setErr("当前环境不支持麦克风采集");
+                        else setErr("麦克风不可用或被拒绝");
                       });
                   }}
                 >

@@ -406,27 +406,62 @@ export default function SvgFloorplan() {
     const parts = viewBox.split(" ").map(Number);
     const w = parts[2] || 1;
     const h = parts[3] || 1;
-    return `${w} / ${h}`;
+    return w / h;
   }, [viewBox]);
 
+  // 动态计算适配容器的尺寸
+  // const [wrapperStyle, setWrapperStyle] = useState({ width: "100%", height: "100%" });
+
+  // useEffect(() => {
+  //   if (!containerRef.current) return;
+    
+  //   const updateSize = () => {
+  //     const container = containerRef.current;
+  //     if (!container) return;
+  //     const cw = container.clientWidth;
+  //     const ch = container.clientHeight;
+  //     if (cw === 0 || ch === 0) return;
+
+  //     const containerRatio = cw / ch;
+
+  //     // Contain 模式：始终完整显示
+  //     if (containerRatio > aspectRatio) {
+  //       // 容器更宽，高度占满，宽度自适应（会有左右留白）
+  //       const w = ch * aspectRatio;
+  //       setWrapperStyle({ width: `${w}px`, height: `${ch}px` });
+  //     } else {
+  //       // 容器更高，宽度占满，高度自适应（会有上下留白）
+  //       const h = cw / aspectRatio;
+  //       setWrapperStyle({ width: `${cw}px`, height: `${h}px` });
+  //     }
+  //   };
+
+  //   const ro = new ResizeObserver(updateSize);
+  //   ro.observe(containerRef.current);
+  //   updateSize();
+
+  //   return () => ro.disconnect();
+  // }, [aspectRatio]);
+
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[#0b1220]" ref={containerRef}>
+    <div className="relative w-full h-full flex items-center justify-center bg-[#0b1220] overflow-hidden" ref={containerRef}>
       {/* 背景装饰 */}
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(16,185,129,0.05),rgba(0,0,0,0)_70%)]" />
       
-      <div className="absolute inset-0 flex items-center justify-center">
-        <div className="relative" style={{ aspectRatio, width: "min(80vw, 80vh)" }}>
+      <div 
+        className="relative h-full max-w-full shadow-2xl transition-all duration-300 ease-out md:min-w-[500px]"
+        style={{ aspectRatio: aspectRatio }}
+      >
           <img
             src="/topoexport_2D_vectorial.svg"
             alt="Floorplan"
-            className="absolute inset-0 h-full w-full object-contain select-none"
+            className="absolute inset-0 h-full w-full select-none"
           />
           <canvas
             ref={canvasRef}
             className="absolute inset-0 h-full w-full opacity-80 drop-shadow-[0_0_15px_rgba(99,102,241,0.3)]"
             style={{ filter: "drop-shadow(0 0 1px rgba(255,255,255,0.1))" }}
           />
-        </div>
       </div>
 
       {/* 悬浮指标 */}
