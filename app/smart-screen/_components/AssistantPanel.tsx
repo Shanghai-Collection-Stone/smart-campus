@@ -118,13 +118,14 @@ export default function AssistantPanel() {
     const finalsKey = normalizeTranscriptKey(finalsText);
     const interimKey = normalizeTranscriptKey(interimText);
     if (!interimKey) return finalsText;
-    if (finalsKey.endsWith(interimKey) || finalsKey.includes(interimKey)) return finalsText;
-    if (interimKey.startsWith(finalsKey)) return interimText;
     if (interimKey.length <= 2) {
+      if (finalsKey.endsWith(interimKey) || finalsKey.includes(interimKey)) return finalsText;
       const hasZh = /[\u4e00-\u9fff]/.test(finalsText) || /[\u4e00-\u9fff]/.test(interimText);
       const combined = hasZh ? `${finalsText}${interimText}` : `${finalsText} ${interimText}`;
       return sanitizeTranscriptText(combined);
     }
+    if (finalsKey.endsWith(interimKey) || finalsKey.includes(interimKey)) return finalsText;
+    if (interimKey.startsWith(finalsKey)) return interimText;
     return `${finalsText} ${interimText}`.trim();
   };
 
@@ -196,7 +197,8 @@ export default function AssistantPanel() {
     utt.onstart = () => {
       isSilentRef.current = false;
       if (!hangupInProgressRef.current && callRef.current === "active" && stopRecognitionFnRef.current) {
-        try { stopRecognitionFnRef.current(); } catch {}
+        const fn = stopRecognitionFnRef.current;
+        window.setTimeout(() => { try { fn(); } catch {} }, 800);
       }
       // 启动估算计时器，以防 boundary 不触发
       // 更加精准的语速估算（字符/秒）: 
@@ -692,8 +694,6 @@ export default function AssistantPanel() {
    * @keyword-en stopRecognition, endSpeech
    */
   const stopRecognition = () => {
-    setInterim("");
-    interimRef.current = "";
     setSendingSoon(false);
     voiceHadInputRef.current = false;
     isSilentRef.current = false;

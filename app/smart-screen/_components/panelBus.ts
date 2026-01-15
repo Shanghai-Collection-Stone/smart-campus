@@ -25,6 +25,7 @@ export type PanelAction =
     }
   | { kind: "trend:set"; target: "sales"; to: "sales" | "people" }
   | { kind: "report:open"; month: string }
+  | { kind: "report:compare"; months: [string, string] }
   | { kind: "report:close" };
 
 const listeners = new Set<(a: PanelAction) => void>();
@@ -96,6 +97,17 @@ export function isPanelAction(x: unknown): x is PanelAction {
   if (kind === "report:open") {
     const m = obj.month;
     return typeof m === "string" && /^(\d{4})-(0[1-9]|1[0-2])$/.test(m);
+  }
+  if (kind === "report:compare") {
+    const ms = obj.months;
+    if (!Array.isArray(ms) || ms.length !== 2) return false;
+    const a = ms[0];
+    const b = ms[1];
+    return (
+      typeof a === "string" && typeof b === "string" &&
+      /^(\d{4})-(0[1-9]|1[0-2])$/.test(a) &&
+      /^(\d{4})-(0[1-9]|1[0-2])$/.test(b)
+    );
   }
   if (kind === "report:close") {
     return true;

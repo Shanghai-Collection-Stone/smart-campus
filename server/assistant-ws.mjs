@@ -164,6 +164,30 @@ async function startServer() {
       },
     }),
     new DynamicStructuredTool({
+      name: "compareMonthlyReports",
+      description: [
+        "对比两个月度报表，同时展示对比分析。",
+        "示例: 对比八月与九月→ {monthA:'八月', monthB:'九月'}。",
+        "也可传 8/9 或 08/09、August/September。",
+        "请直接调用本工具，不要解释；等待前端完成后返回简短确认。",
+      ].join(" "),
+      schema: z.object({ monthA: z.string(), monthB: z.string() }),
+      func: async ({ monthA, monthB }) => {
+        const normalize = (m) => {
+          const s = String(m || "").trim().toLowerCase();
+          if (s === "8" || s === "08" || s.includes("八") || s.includes("aug")) return "2025-08";
+          if (s === "9" || s === "09" || s.includes("九") || s.includes("sep")) return "2025-09";
+          return "";
+        };
+        const a = normalize(monthA);
+        const b = normalize(monthB);
+        if (!a || !b) return JSON.stringify({ ok: false, message: "unknown_month" });
+        const action = { kind: "report:compare", months: [a, b] };
+        const res = await emitPanelAction(action);
+        return JSON.stringify({ ok: true, ack: res });
+      },
+    }),
+    new DynamicStructuredTool({
       name: "closeMonthlyReport",
       description: [
         "关闭月度详细报表弹窗。",
@@ -253,8 +277,8 @@ async function startServer() {
   ];
 
   const systemPrompt = [
-    "你是运营数据助手，回答简短高效；凡是界面操作或展示调整，必须调用工具并等待确认。",
-    "工具: executeDecision(执行智能决策)、updateMetricCard(按目标键切换左侧指标卡片)、updateMetricByLabel(按中文标签切换左侧指标卡片)、setTrendType(右侧趋势切换)、openMonthlyReport(弹出月度报表)、closeMonthlyReport(关闭月度报表)、getMenuGuide(返回菜单说明)、suggestMetricCandidates(模糊文本建议候选)。",
+    "你的称呼是“指挥官”，你是运营数据助手，回答简短高效；凡是界面操作或展示调整，必须调用工具并等待确认。",
+    "工具: executeDecision(执行智能决策)、updateMetricCard(按目标键切换左侧指标卡片)、updateMetricByLabel(按中文标签切换左侧指标卡片)、setTrendType(右侧趋势切换)、openMonthlyReport(弹出月度报表)、closeMonthlyReport(关闭月度报表)、compareMonthlyReports(对比两个月度报表)、getMenuGuide(返回菜单说明)、suggestMetricCandidates(模糊文本建议候选)。",
     "语音识别可能有误：当用户请求不清晰或标签不匹配时，先调用 suggestMetricCandidates 返回候选，向用户确认“是否指的是：A 或 B ？”；得到明确确认后再调用对应更新工具。",
     "示例: '执行智能决策第2条'→ executeDecision({index:2});",
     "示例: 未说明序号时，先回复询问“请问要执行第几条智能决策？”；得到用户明确后再调用 executeDecision({index:N})。",
@@ -262,9 +286,11 @@ async function startServer() {
     "示例: '把今日来客改为昨日来客'→ updateMetricByLabel({oldLabel:'今日来客', newLabel:'昨日来客', flip:true});",
     "示例: '右侧改为人数趋势'→ setTrendType({to:'people'});",
     "示例: '展示八月份报表'或'打开九月份报表'→ openMonthlyReport({month:'八月'}或{month:'九月'});",
+    "示例: '对比八月与九月'→ compareMonthlyReports({monthA:'八月', monthB:'九月'});",
     "示例: '关闭报表'、'收起月度报表'→ closeMonthlyReport({});",
     "用户说“菜单/不会用/怎么操作”时→ 调用 getMenuGuide() 并简要朗读关键项。",
     "收到面板确认后再回复“已切换”或根据失败信息提示用户，不要建议手动操作。",
+    "当用户询问“销售数据/销售情况/渠道销售/营收数据”等销售相关问题时，人性化一些回复固定数据,比如说：“具查询当前数据 携程２０００，途牛３０００，小程序平台５０００”，随后追加1-2条简短建议（例如：加大小程序投放、优化携程转化、检查途牛渠道），无需调用任何工具。",
   ].join(" ");
 
   const env = {
