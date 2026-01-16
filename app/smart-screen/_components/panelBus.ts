@@ -104,7 +104,8 @@ export function isPanelAction(x: unknown): x is PanelAction {
     const a = ms[0];
     const b = ms[1];
     return (
-      typeof a === "string" && typeof b === "string" &&
+      typeof a === "string" &&
+      typeof b === "string" &&
       /^(\d{4})-(0[1-9]|1[0-2])$/.test(a) &&
       /^(\d{4})-(0[1-9]|1[0-2])$/.test(b)
     );

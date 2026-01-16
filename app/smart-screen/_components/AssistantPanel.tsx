@@ -637,6 +637,13 @@ export default function AssistantPanel() {
             }
           }
         } catch {}
+        if (ok) {
+          const kVal = Reflect.get(act as object, "kind");
+          const kind = typeof kVal === "string" ? kVal : "";
+          if (kind === "report:compare") {
+            // 对比动作已由服务端处理并生成语音回复，此处仅需确保弹窗响应即可
+          }
+        }
         try { s.emit("panel:done", { id, ok, message }); } catch {}
       }, 60);
     });

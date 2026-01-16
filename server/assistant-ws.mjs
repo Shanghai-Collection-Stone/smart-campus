@@ -70,6 +70,27 @@ async function startServer() {
 
   const socketHistories = new Map();
 
+  const mockMonthlyReports = {
+    "2025-08": {
+      monthKey: "2025-08",
+      revenueTotal: 12198340,
+      visitorsTotal: 89260,
+      ordersTotal: 38642,
+      conversionRate: 43,
+      avgOrderValue: 316,
+      channels: { pos: 66, miniapp: 34 },
+    },
+    "2025-09": {
+      monthKey: "2025-09",
+      revenueTotal: 14475120,
+      visitorsTotal: 101430,
+      ordersTotal: 48221,
+      conversionRate: 48,
+      avgOrderValue: 300,
+      channels: { pos: 54, miniapp: 46 },
+    },
+  };
+
   const tools = [
     new DynamicStructuredTool({
       name: "executeDecision",
@@ -169,7 +190,7 @@ async function startServer() {
         "对比两个月度报表，同时展示对比分析。",
         "示例: 对比八月与九月→ {monthA:'八月', monthB:'九月'}。",
         "也可传 8/9 或 08/09、August/September。",
-        "请直接调用本工具，不要解释；等待前端完成后返回简短确认。",
+        "本工具会返回详细的对比分析文案，请直接将该文案作为你的回答输出，不要随意修改。",
       ].join(" "),
       schema: z.object({ monthA: z.string(), monthB: z.string() }),
       func: async ({ monthA, monthB }) => {
@@ -179,12 +200,36 @@ async function startServer() {
           if (s === "9" || s === "09" || s.includes("九") || s.includes("sep")) return "2025-09";
           return "";
         };
-        const a = normalize(monthA);
-        const b = normalize(monthB);
-        if (!a || !b) return JSON.stringify({ ok: false, message: "unknown_month" });
-        const action = { kind: "report:compare", months: [a, b] };
+        const aKey = normalize(monthA);
+        const bKey = normalize(monthB);
+        if (!aKey || !bKey) return JSON.stringify({ ok: false, message: "unknown_month" });
+        
+        const action = { kind: "report:compare", months: [aKey, bKey] };
         const res = await emitPanelAction(action);
-        return JSON.stringify({ ok: true, ack: res });
+
+        const a = mockMonthlyReports[aKey];
+        const b = mockMonthlyReports[bKey];
+        let analysis = "已为您打开对比视图。";
+        if (a && b) {
+          const pct = (x, y) => Math.round(((y - x) / Math.max(1, x)) * 100);
+          const dir = (d) => (d >= 0 ? "提升" : "下降");
+          const mon = (key) => {
+            const parts = key.split("-");
+            if (parts.length === 2) {
+              const m = Number(parts[1]);
+              return `${m}月`;
+            }
+            return key;
+          };
+          const r = pct(a.revenueTotal, b.revenueTotal);
+          const v = pct(a.visitorsTotal, b.visitorsTotal);
+          const o = pct(a.ordersTotal, b.ordersTotal);
+          const av = pct(a.avgOrderValue, b.avgOrderValue);
+          const ch = Math.round(b.channels.miniapp - a.channels.miniapp);
+          analysis = `对比${mon(a.monthKey)}与${mon(b.monthKey)}数据：营收${dir(r)}${Math.abs(r)}%，人数${dir(v)}${Math.abs(v)}%，订单${dir(o)}${Math.abs(o)}%，客单价${dir(av)}${Math.abs(av)}%。线上小程序占比${ch >= 0 ? "提升" : "下降"}${Math.abs(ch)}%。建议：加大小程序投放、优化漏斗节点、峰值时段增配互动。`;
+        }
+
+        return JSON.stringify({ ok: true, ack: res, analysis });
       },
     }),
     new DynamicStructuredTool({
@@ -278,6 +323,7 @@ async function startServer() {
 
   const systemPrompt = [
     "你的称呼是“指挥官”，你是运营数据助手，回答简短高效；凡是界面操作或展示调整，必须调用工具并等待确认。",
+    "严禁主动向用户介绍你的功能或提供帮助菜单，除非用户明确询问“你能做什么”、“菜单”或“怎么用”。",
     "工具: executeDecision(执行智能决策)、updateMetricCard(按目标键切换左侧指标卡片)、updateMetricByLabel(按中文标签切换左侧指标卡片)、setTrendType(右侧趋势切换)、openMonthlyReport(弹出月度报表)、closeMonthlyReport(关闭月度报表)、compareMonthlyReports(对比两个月度报表)、getMenuGuide(返回菜单说明)、suggestMetricCandidates(模糊文本建议候选)。",
     "语音识别可能有误：当用户请求不清晰或标签不匹配时，先调用 suggestMetricCandidates 返回候选，向用户确认“是否指的是：A 或 B ？”；得到明确确认后再调用对应更新工具。",
     "示例: '执行智能决策第2条'→ executeDecision({index:2});",
@@ -288,7 +334,7 @@ async function startServer() {
     "示例: '展示八月份报表'或'打开九月份报表'→ openMonthlyReport({month:'八月'}或{month:'九月'});",
     "示例: '对比八月与九月'→ compareMonthlyReports({monthA:'八月', monthB:'九月'});",
     "示例: '关闭报表'、'收起月度报表'→ closeMonthlyReport({});",
-    "用户说“菜单/不会用/怎么操作”时→ 调用 getMenuGuide() 并简要朗读关键项。",
+    "只有当用户明确询问“菜单”、“功能列表”或“你能做什么”时→ 调用 getMenuGuide() 并简要朗读关键项。",
     "收到面板确认后再回复“已切换”或根据失败信息提示用户，不要建议手动操作。",
     "当用户询问“销售数据/销售情况/渠道销售/营收数据”等销售相关问题时，人性化一些回复固定数据,比如说：“具查询当前数据 携程２０００，途牛３０００，小程序平台５０００”，随后追加1-2条简短建议（例如：加大小程序投放、优化携程转化、检查途牛渠道），无需调用任何工具。",
   ].join(" ");
